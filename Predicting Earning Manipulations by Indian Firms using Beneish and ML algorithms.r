@@ -1,0 +1,238 @@
+
+#HW-3: Predicting Earning Manipulations by Indian Firms using Machine Learning Algorithms.
+
+################################################################################################################################
+library(tidyverse)
+library(readxl)
+library(caret)
+install.packages('glmnet')
+library(glmnet)
+
+# Reading the complete data-set sheet from excel file and draw basic insights
+dataset <- read_excel('HW3_data.xlsx',sheet = 'Complete Data')
+head(dataset)
+dim(dataset) # gives 1239 rows and 11 columns
+
+table(dataset$Manipulater, useNA = "ifany") # No: 1200, Yes: 39 , no null values
+
+# hence we see the data-set is highly imbalanced with %age of manipulators only 3.14 % of total data as pointed
+# out in the case study paper too on Page-6 by Saurabh Rishi, Chief data scientist of MCA technology
+
+################################################################################################################################
+# Quest- 1: Do you think the Beneish model developed in 1999 will still be relevant to Indian data?
+################################################################################################################################
+
+# The Beneish Model was created to detect financial frauds and is estimated using the M-Score.
+# The M-score mathemical formulae is given as 
+
+# M score = -4.84 + 0.92 DSRI + 0.528 GMI + 0.404 AQI + 0.892 SGI + 0.115 DEPI – 0.172 SGAI
+# + 4.679 TATA – 0.327 LVGI 
+
+# A M-Score of less than -1.78 means non-manipulator else manipulator
+
+# So lets calculate the M-score for our complete data-set
+
+dataset$ben_model_score <- (-4.84+(0.92*dataset$DSRI)+(0.528* dataset$GMI) +(0.404* dataset$AQI)+(0.892*dataset$SGI) + (0.115* dataset$DEPI) -(0.172*dataset$SGAI)+(4.679*dataset$ACCR)-0.327*dataset$LEVI)
+
+
+sum(dataset$ben_model_score)/length(dataset$ben_model_score) # overall avg is -2.402 which indicates a higher %gae of non-manipulators
+sum(is.na(dataset$ben_model_score)) # no null values so that's good
+
+dataset$ben_pred <- NA
+dataset$ben_pred[dataset$ben_model_score > -1.78] <- 1
+dataset$ben_pred[dataset$ben_model_score < -1.78] <- 0
+
+# So we included a column as prediction of Beneish model giving 1 or 0 (1 for manipulators and 0 for non manipulators)
+
+# Lets calculate the accuracy of Beneish model based on our M-Score Prediction
+
+cf_table <- table(dataset$ben_pred, dataset$`C-MANIPULATOR`, 
+                       dnn = c("Acutal", "Prediction"))
+
+
+confusionMatrix(cf_table, positive = "1" )
+
+# So the accuracy of the Beneish model is found to be 85 % and sensitivity, precision is 79% each which is a good performance.
+# Hence we can say that as per current sample dataset, the Beneish model for Indian data could still be relevant.
+# However we need to look at other ML algorithms to come to a conclusion and also our dataset is highly imbalanced.
+
+
+
+
+################################################################################################################################
+
+
+# Quest-3 : Use a sample data (220 cases including 39 manipulators) and develop a logistic regression 
+# model that can be used by mca technologies private limited for predicting probability of 
+# earnings manipulation.
+
+################################################################################################################################
+
+
+sample_dataset <- read_excel('HW3_data.xlsx',sheet = 'sample_data')
+head(sample_dataset)
+dim(sample_dataset) # 220 11
+
+
+sample_dataset$`C-MANIPULATOR` = as.factor(sample_dataset$`C-MANIPULATOR`) # making our target variable as a factor
+class(sample_dataset$`C-MANIPULATOR`)
+
+names(sample_dataset)[11] <- 'manipulator_target'
+names(sample_dataset)[1] <- 'company_ID'
+
+head(sample_dataset)
+
+table(sample_dataset$manipulator_target, useNA = "ifany") # 0s--> 181 and 1s--> 39 (17% manipulators only)
+
+
+# removing unnecessary column
+sample_dataset$Manipulater <- NULL
+head(sample_dataset)
+
+
+#Applying an oversampling technique to balance data
+
+library(ROSE)
+over_sample <- ovun.sample(manipulator_target~.,data=sample_dataset,method="over",N=248)$data 
+table(over_sample$manipulator_target) 
+str(over_sample)
+
+# splitting the sample dataset into train and test before creating the logistic regression model
+
+set.seed(1234)
+index <- sample(2, nrow(over_sample), replace = TRUE, prob = c(0.70,0.30))
+train_sample_data <- over_sample[index == 1,]
+test_sample_data <- over_sample[index == 2,]
+
+table(train_sample_data$manipulator_target) # 0s: 121 and 1s: 69
+
+
+# now lets create log regression model
+# variable selection
+null = glm(manipulator_target~1, data = train_sample_data, family = 'binomial')
+full = glm(manipulator_target~., data = train_sample_data, family = 'binomial')
+#Forward Selection
+step(null, scope=list(lower=null, upper=full), direction="forward")
+step(null, scope=list(lower=null, upper=full), direction="backward")
+step(full,scope =list(lower=null,upper=full),direction ="both")
+# imp variables are DSRI + SGI + ACCR + AQI + GMI.
+
+log_reg <- glm(manipulator_target ~  DSRI + GMI + AQI + SGI + DEPI + ACCR ,data = train_sample_data, family = "binomial")
+summary(log_reg)
+
+p <- predict(log_reg, test_sample_data, type = 'response') 
+p 
+pred <- ifelse(p>0.5, 1, 0) 
+tab<- table(pred,test_sample_data$manipulator_target, dnn = c("Actual", "Prediction")) 
+tab 
+cm <- confusionMatrix(as.factor(pred),test_sample_data$manipulator_target,positive = "1" ) 
+cm
+
+# Accuracy is 85%
+# Sensitivity is 67%
+# Specificity is 95%
+
+#Evaluating the model further with the help of an ROC curve
+#ROC curve for logistic regression 
+
+library(pROC) 
+a <- roc(test_sample_data$manipulator_target,p,plot=TRUE,legacy.axes=TRUE) 
+df <- data.frame(tpp=a$sensitivities*100,fpp=(1-a$specificities)*100,thresholds=a$thresholds) 
+head(df) 
+df 
+
+
+#Now we will choose the best threshold for sensititivity around 75 percent and choose the threshold   : 0.3155749
+
+library(caret) 
+p <- predict(log_reg, test_sample_data, type = 'response') 
+p 
+pred <- ifelse(p> 0.3155749, '1', '0') 
+tab<- table(Predicted = pred,Actual = test_sample_data$manipulator_target) 
+tab 
+cm <- confusionMatrix(as.factor(pred),test_sample_data$manipulator_target, positive = "1") 
+cm
+
+# Accuracy is 84%
+# Sensitivity is 75%
+# Specificity is 88%
+
+
+##############################################################################################################################################
+
+#Classification and regression tree (CART) model
+
+a <- read_excel('HW3_data.xlsx',sheet = 'Complete Data') 
+names(a)[1] <- "ID" 
+a$`C-MANIPULATOR`<- NULL 
+a$ID <- NULL 
+a$Manipulater<- factor(a$Manipulater) 
+table(a$Manipulater) 
+set.seed(1234) 
+ind <- sample(2, nrow(a), replace = T, prob = c(0.65, 0.35)) 
+train <- a[ind==1,] 
+test <- a[ind==2,] 
+
+#Smote on train data
+
+library(UBL) 
+smote <- SmoteClassif(Manipulater~.,as.data.frame(train), "balance") #SmoteClassif balances the number of "Yes"and "No" in train$Manipulater
+prop.table(table(smote$Manipulater)) 
+table(smote$Manipulater) 
+library(rpart) 
+
+library(rpart.plot) 
+tree <- rpart(Manipulater~.,data = smote,control=rpart.control(mincriterion=0.95,maxdepth = 6)) 
+rpart.plot(tree,extra = 1) 
+
+predictcart <- predict(tree,test,type = "class") 
+confusionMatrix(predictcart,test$Manipulater,positive = "Yes") 
+library(pROC) 
+predictroc <- predict(tree,test,type = "prob") 
+roc(test$Manipulater,predictroc[,2],plot=TRUE,legacy.axes=TRUE) 
+
+#Pruning with cp
+
+opt <- which.min(tree$cptable[,"xerror"])  
+cp <- tree$cptable[opt, "CP"] 
+tree_prune <- prune(tree, cp = cp)
+rpart.plot(tree_prune,extra = 1) 
+predictcart <- predict(tree_prune,test,type = "class") 
+confusionMatrix(predictcart,test$Manipulater,positive = "Yes") 
+
+# Accuracy is 80%
+# Sensitivity is 50%
+# Specificity is 81%
+
+###################################################################################################################
+
+#Logistic regression model using the complete data set 
+
+full<- glm(Manipulater ~ ., data = smote, family = 'binomial') 
+null <- glm(Manipulater ~ 1, data = smote, family = 'binomial') 
+fulllog <- step(null,scope =list(lower=null,upper=full),direction ="both") 
+summary(fulllog) 
+
+#EVALUATION 
+
+p <- predict(fulllog, test, type = 'response') 
+p 
+pred <- ifelse(p>0.5, "Yes", "No") 
+tab<- table(Predicted = pred,Actual = test$Manipulater) 
+tab 
+cm <- confusionMatrix(as.factor(pred),test$Manipulater, positive = "Yes") 
+cm 
+
+
+# Accuracy is 84%
+# Sensitivity is 60%
+# Specificity is 85%
+
+
+#######################################################################################################################
+
+
+
+
+
+
